@@ -138,4 +138,6 @@ fi
 printf "\n%s\n" "${delimiter}"
 printf "Launching launch.py..."
 printf "\n%s\n" "${delimiter}"
-"${python_cmd}" "${LAUNCH_SCRIPT}" #--share # use this to share via gradio for remote access #--listen # this should make the server listen on 0.0.0.0 and hence be available in the network 
+
+
+"${python_cmd}" "${LAUNCH_SCRIPT}" "$@"

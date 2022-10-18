@@ -1,5 +1,12 @@
 // various functions for interation with ui.py not large enough to warrant putting them in separate files
 
+function set_theme(theme){
+    gradioURL = window.location.href
+    if (!gradioURL.includes('?__theme=')) {
+      window.location.replace(gradioURL + '?__theme=' + theme);
+    }
+}
+
 function selected_gallery_index(){
     var buttons = gradioApp().querySelectorAll('[style="display: block;"].tabitem .gallery-item')
     var button = gradioApp().querySelector('[style="display: block;"].tabitem .gallery-item.\\!ring-2')
@@ -141,7 +148,7 @@ function submit_img2img(){
 
 function ask_for_style_name(_, prompt_text, negative_prompt_text) {
     name_ = prompt('Style name:')
-    return name_ === null ? [null, null, null]: [name_, prompt_text, negative_prompt_text]
+    return [name_, prompt_text, negative_prompt_text]
 }
 
 
