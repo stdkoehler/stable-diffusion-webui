@@ -17,7 +17,7 @@ import gradio.routes
 import gradio.utils
 import numpy as np
 from PIL import Image, PngImagePlugin
-
+from modules.call_queue import wrap_gradio_gpu_call, wrap_queued_call, wrap_gradio_call
 
 from modules import sd_hijack, sd_models, localization, script_callbacks, ui_extensions, deepbooru
 from modules.paths import script_path
@@ -158,67 +158,6 @@ def save_files(js_data, images, do_make_zip, index):
     return gr.File.update(value=fullfns, visible=True), '', '', plaintext_to_html(f"Saved: {filenames[0]}")
 
 
-def wrap_gradio_call(func, extra_outputs=None, add_stats=False):
-    def f(*args, extra_outputs_array=extra_outputs, **kwargs):
-        run_memmon = opts.memmon_poll_rate > 0 and not shared.mem_mon.disabled and add_stats
-        if run_memmon:
-            shared.mem_mon.monitor()
-        t = time.perf_counter()
-
-        try:
-            res = list(func(*args, **kwargs))
-        except Exception as e:
-            # When printing out our debug argument list, do not print out more than a MB of text
-            max_debug_str_len = 131072 # (1024*1024)/8
-
-            print("Error completing request", file=sys.stderr)
-            argStr = f"Arguments: {str(args)} {str(kwargs)}"
-            print(argStr[:max_debug_str_len], file=sys.stderr)
-            if len(argStr) > max_debug_str_len:
-                print(f"(Argument list truncated at {max_debug_str_len}/{len(argStr)} characters)", file=sys.stderr)
-
-            print(traceback.format_exc(), file=sys.stderr)
-
-            shared.state.job = ""
-            shared.state.job_count = 0
-
-            if extra_outputs_array is None:
-                extra_outputs_array = [None, '']
-
-            res = extra_outputs_array + [f"<div class='error'>{plaintext_to_html(type(e).__name__+': '+str(e))}</div>"]
-
-        shared.state.skipped = False
-        shared.state.interrupted = False
-        shared.state.job_count = 0
-
-        if not add_stats:
-            return tuple(res)
-
-        elapsed = time.perf_counter() - t
-        elapsed_m = int(elapsed // 60)
-        elapsed_s = elapsed % 60
-        elapsed_text = f"{elapsed_s:.2f}s"
-        if elapsed_m > 0:
-            elapsed_text = f"{elapsed_m}m "+elapsed_text
-
-        if run_memmon:
-            mem_stats = {k: -(v//-(1024*1024)) for k, v in shared.mem_mon.stop().items()}
-            active_peak = mem_stats['active_peak']
-            reserved_peak = mem_stats['reserved_peak']
-            sys_peak = mem_stats['system_peak']
-            sys_total = mem_stats['total']
-            sys_pct = round(sys_peak/max(sys_total, 1) * 100, 2)
-
-            vram_html = f"<p class='vram'>Torch active/reserved: {active_peak}/{reserved_peak} MiB, <wbr>Sys VRAM: {sys_peak}/{sys_total} MiB ({sys_pct}%)</p>"
-        else:
-            vram_html = ''
-
-        # last item is always HTML
-        res[-1] += f"<div class='performance'><p class='time'>Time taken: <wbr>{elapsed_text}</p>{vram_html}</div>"
-
-        return tuple(res)
-
-    return f
 
 
 def calc_time_left(progress, threshold, label, force_display):
@@ -666,7 +605,7 @@ Requested path was: {f}
                 return result_gallery, generation_info if tabname != "extras" else html_info_x, html_info
 
 
-def create_ui(wrap_gradio_gpu_call):
+def create_ui():
     import modules.img2img
     import modules.txt2img
 
@@ -826,7 +765,7 @@ def create_ui(wrap_gradio_gpu_call):
                 height,
             ]
 
-            token_button.click(fn=update_token_counter, inputs=[txt2img_prompt, steps], outputs=[token_counter])
+            token_button.click(fn=wrap_queued_call(update_token_counter), inputs=[txt2img_prompt, steps], outputs=[token_counter])
 
     modules.scripts.scripts_current = modules.scripts.scripts_img2img
     modules.scripts.scripts_img2img.initialize_scripts(is_img2img=True)
@@ -1044,6 +983,7 @@ def create_ui(wrap_gradio_gpu_call):
                 (seed_resize_from_w, "Seed resize from-1"),
                 (seed_resize_from_h, "Seed resize from-2"),
                 (denoising_strength, "Denoising strength"),
+                (mask_blur, "Mask blur"),
                 *modules.scripts.scripts_img2img.infotext_fields
             ]
             parameters_copypaste.add_paste_fields("img2img", init_img, img2img_paste_fields)
@@ -1164,7 +1104,11 @@ def create_ui(wrap_gradio_gpu_call):
                 custom_name = gr.Textbox(label="Custom Name (Optional)")
                 interp_amount = gr.Slider(minimum=0.0, maximum=1.0, step=0.05, label='Multiplier (M) - set to 0 to get model A', value=0.3)
                 interp_method = gr.Radio(choices=["Weighted sum", "Add difference"], value="Weighted sum", label="Interpolation Method")
-                save_as_half = gr.Checkbox(value=False, label="Save as float16")
+
+                with gr.Row():
+                    checkpoint_format = gr.Radio(choices=["ckpt", "safetensors"], value="ckpt", label="Checkpoint format")
+                    save_as_half = gr.Checkbox(value=False, label="Save as float16")
+
                 modelmerger_merge = gr.Button(elem_id="modelmerger_merge", label="Merge", variant='primary')
 
             with gr.Column(variant='panel'):
@@ -1221,7 +1165,7 @@ def create_ui(wrap_gradio_gpu_call):
                         process_split = gr.Checkbox(label='Split oversized images')
                         process_focal_crop = gr.Checkbox(label='Auto focal point crop')
                         process_caption = gr.Checkbox(label='Use BLIP for caption')
-                        process_caption_deepbooru = gr.Checkbox(label='Use deepbooru for caption', visible=True if cmd_opts.deepdanbooru else False)
+                        process_caption_deepbooru = gr.Checkbox(label='Use deepbooru for caption', visible=True)
 
                     with gr.Row(visible=False) as process_split_extra_row:
                         process_split_threshold = gr.Slider(label='Split image threshold', value=0.5, minimum=0.0, maximum=1.0, step=0.05)
@@ -1692,6 +1636,7 @@ def create_ui(wrap_gradio_gpu_call):
                 interp_amount,
                 save_as_half,
                 custom_name,
+                checkpoint_format,
             ],
             outputs=[
                 submit_result,
